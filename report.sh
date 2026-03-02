@@ -6,6 +6,7 @@ CONFIG_FILE="$HOME/.git-auto-report.conf"
 # 默认安全变量定义
 DEFAULT_WORK_DIR="$HOME/Work"
 DEFAULT_GROUP_BY="date"
+DEFAULT_ALIGN_MODE="inline" # 将默认对齐模式改为 inline
 
 # 如果配置文件不存在，或者用户传入了 --init 参数，则进入交互式配置
 if [ ! -f "$CONFIG_FILE" ] || [ "$1" == "--init" ]; then
@@ -16,15 +17,18 @@ if [ ! -f "$CONFIG_FILE" ] || [ "$1" == "--init" ]; then
     
     read -p "📁 1. 请输入默认扫描的父级工作目录 (例如 ~/Developer/Work): " input_dir
     read -p "📊 2. 默认报告分组方式 (输入 date 或 repo) [默认 date]: " input_group
+    read -p "🎨 3. 简洁模式下的默认对齐方式 (输入 inline 或 list) [默认 inline]: " input_align
     
     # 处理空输入
     input_dir="${input_dir:-$DEFAULT_WORK_DIR}"
     input_group="${input_group:-$DEFAULT_GROUP_BY}"
+    input_align="${input_align:-$DEFAULT_ALIGN_MODE}"
     
     # 写入配置文件
     echo "# Git Auto Report 配置文件" > "$CONFIG_FILE"
     echo "WORK_DIR=\"$input_dir\"" >> "$CONFIG_FILE"
     echo "GROUP_BY=\"$input_group\"" >> "$CONFIG_FILE"
+    echo "ALIGN_MODE=\"$input_align\"" >> "$CONFIG_FILE"
     
     echo -e "\n✅ 配置已保存至 $CONFIG_FILE。"
     echo -e "💡 提示：您可以随时修改该文件，或运行 './report.sh --init' 重新设置。\n"
@@ -35,12 +39,16 @@ fi
 # 加载用户配置
 source "$CONFIG_FILE"
 
+# 兼容旧版本配置文件：如果配置中没有 ALIGN_MODE，则使用默认值
+ALIGN_MODE="${ALIGN_MODE:-$DEFAULT_ALIGN_MODE}"
+
 # ================= 动态参数配置 =================
 AFTER_DATE="midnight"
 BEFORE_DATE="now"
 SHOW_BRANCH=false
 SORT_ASC=false     
 CONCISE_MODE=false 
+INDENT_SPACES=4    # 默认缩进空格数
 TEAM_MODE=false    
 SAVE_TO_FILE=false 
 
@@ -60,6 +68,8 @@ while [[ "$#" -gt 0 ]]; do
         --by-repo) GROUP_BY="repo" ;;
         --asc) SORT_ASC=true ;;
         --concise) CONCISE_MODE=true ;;
+        --align) ALIGN_MODE="$2"; shift ;;
+        --indent) INDENT_SPACES="$2"; shift ;;
         --team) TEAM_MODE=true ;;
         --save) SAVE_TO_FILE=true; OUTPUT_FILE="WorkReport_${TODAY}.md" ;;
         --out|-o) SAVE_TO_FILE=true; OUTPUT_FILE="$2"; shift ;;
@@ -85,17 +95,15 @@ BLUE='\033[0;34m'
 YELLOW='\033[0;33m'
 NC='\033[0m'
 DELIM="###"
-SORT_DELIM="__SORT__"
 
 echo "=========================================="
 echo -e "正在生成汇报..."
 echo -e "工作区: ${BLUE}$WORK_DIR${NC}"
-echo -e "外观: $(if [ "$CONCISE_MODE" = true ]; then echo "${YELLOW}简洁模式${NC}"; else echo "${GREEN}标准 Markdown${NC}"; fi)"
+echo -e "外观: $(if [ "$CONCISE_MODE" = true ]; then echo "${YELLOW}简洁模式 (${ALIGN_MODE} 对齐, 缩进 ${INDENT_SPACES} 字符)${NC}"; else echo "${GREEN}标准 Markdown${NC}"; fi)"
 echo "=========================================="
 echo ""
 
 # === 核心日志收集与排版逻辑 ===
-# === 遍历目录收集日志 ===
 find "$WORK_DIR" -type d \( -path "*/node_modules" -o -path "*/.next" -o -path "*/dist" \) -prune -o -name ".git" -type d -print 2>/dev/null | while IFS= read -r gitdir; do
     repo_root=$(dirname "$gitdir")
     cd "$repo_root" || continue
@@ -121,14 +129,12 @@ fi
 
 # === 核心排序逻辑 ===
 if [ "$GROUP_BY" = "date" ]; then
-    # 【每日汇报模式】排序层级：1. 日期 -> 2. 项目 -> 3. 具体提交时间
     if [ "$SORT_ASC" = true ]; then
         awk -F'###' '{print $2 "|" $5 "|" $1 "|" $0}' "$TEMP_LOG_FILE" | sort -t'|' -k1,1 -k2,2 -k3,3 | cut -d'|' -f4- > "$SORTED_FILE"
     else
         awk -F'###' '{print $2 "|" $5 "|" $1 "|" $0}' "$TEMP_LOG_FILE" | sort -t'|' -k1,1r -k2,2 -k3,3r | cut -d'|' -f4- > "$SORTED_FILE"
     fi
 else
-    # 【按项目模式】排序层级：1. 项目 -> 2. 日期 -> 3. 具体提交时间
     if [ "$SORT_ASC" = true ]; then
         awk -F'###' '{print $5 "|" $2 "|" $1 "|" $0}' "$TEMP_LOG_FILE" | sort -t'|' -k1,1 -k2,2 -k3,3 | cut -d'|' -f4- > "$SORTED_FILE"
     else
@@ -137,12 +143,19 @@ else
 fi
 
 # === 使用 AWK 进行规范化分组、提取和排版 ===
-FORMATTED_LOGS=$(awk -F'###' -v group_by="$GROUP_BY" -v show_branch="$SHOW_BRANCH" -v concise_mode="$CONCISE_MODE" '
+FORMATTED_LOGS=$(awk -F'###' -v group_by="$GROUP_BY" -v show_branch="$SHOW_BRANCH" -v concise_mode="$CONCISE_MODE" -v align_mode="$ALIGN_MODE" -v indent_spaces="$INDENT_SPACES" '
+# 去除字符串首尾的空格和特殊空白符
+function trim(s) {
+    sub(/^[ \t\r\n\v\f]+/, "", s);
+    sub(/[ \t\r\n\v\f]+$/, "", s);
+    gsub(/[ \t]+/, " ", s);
+    return s;
+}
+
 BEGIN { last_date = ""; last_repo = ""; type_idx = 1; }
 {
     iso_time = $1; date_str = $2; msg = $3; branch = $4; repo = $5;
 
-    # 1. 提取 Type 和纯净的 Message
     type = "other";
     clean_msg = msg;
     if (match(msg, /^[a-zA-Z]+(\([^)]+\))?:\s*/)) {
@@ -159,7 +172,6 @@ BEGIN { last_date = ""; last_repo = ""; type_idx = 1; }
     branch_str = (show_branch == "true" && length(branch) > 2) ? " `" branch "`" : "";
     line = clean_msg branch_str;
 
-    # 2. 多级状态机判定分组切换
     if (group_by == "date") {
         if (date_str != last_date) {
             if (last_date != "") print_types();
@@ -218,39 +230,44 @@ function print_types() {
         }
     }
 
+    # 预生成缩进空格字符串
+    pad = "";
+    for (p = 0; p < indent_spaces; p++) {
+        pad = pad " ";
+    }
+
     for (i = 1; i <= n; i++) {
         t = group_types[i];
         n_msgs = split(type_logs[t], msgs, "\n");
         
-        if (concise_mode == "true") {
-            if (t == "feat") label = "新功能";
-            else if (t == "fix") label = "修复";
-            else if (t == "refactor") label = "重构";
-            else if (t == "chore") label = "杂项";
-            else if (t == "docs") label = "文档";
-            else if (t == "perf") label = "性能";
-            else label = "其它";
+        if (t == "feat") { label = "新功能"; cap_type = "✨ Feat (新功能)"; }
+        else if (t == "fix") { label = "修复"; cap_type = "🐛 Fix (修复)"; }
+        else if (t == "refactor") { label = "重构"; cap_type = "♻️ Refactor (重构)"; }
+        else if (t == "chore") { label = "杂项"; cap_type = "🎫 Chore (杂项)"; }
+        else if (t == "docs") { label = "文档"; cap_type = "📝 Docs (文档)"; }
+        else if (t == "perf") { label = "性能"; cap_type = "⚡️ Perf (性能)"; }
+        else { label = "其它"; cap_type = "🔧 " toupper(substr(t, 1, 1)) substr(t, 2); }
 
-            # 动态补齐空格对齐
-            if (label == "新功能") { prefix = "新功能: "; pad = "        "; }
-            else if (length(label) == 2) { prefix = label ":   "; pad = "        "; }
-            else { prefix = label ": "; pad = "        "; }
+        is_first = 1;
 
-            for (m = 1; m < n_msgs; m++) {
-                if (m == 1) printf "%s%s\n", prefix, msgs[m];
-                else printf "%s%s\n", pad, msgs[m];
-            }
-        } else {
-            if (t == "feat") cap_type = "✨ Feat (新功能)";
-            else if (t == "fix") cap_type = "🐛 Fix (修复)";
-            else if (t == "refactor") cap_type = "♻️ Refactor (重构)";
-            else if (t == "chore") cap_type = "🎫 Chore (杂项)";
-            else if (t == "docs") cap_type = "📝 Docs (文档)";
-            else cap_type = "🔧 " toupper(substr(t, 1, 1)) substr(t, 2);
+        for (m = 1; m < n_msgs; m++) {
+            clean_msg_line = trim(msgs[m]);
+            if (length(clean_msg_line) == 0) continue;
 
-            printf "**%s**\n", cap_type;
-            for (m = 1; m < n_msgs; m++) {
-                printf "- %s\n", msgs[m];
+            if (concise_mode == "true") {
+                if (align_mode == "inline") {
+                    # Inline 模式：标签独占一行，后续内容统一缩进
+                    if (is_first) { printf "%s:\n", label; is_first = 0; }
+                    printf "%s%s\n", pad, clean_msg_line;
+                } else {
+                    # List 模式：标准的 Markdown 列表
+                    if (is_first) { printf "- **%s**:\n", label; is_first = 0; }
+                    printf "  - %s\n", clean_msg_line;
+                }
+            } else {
+                # 标准模式
+                if (is_first) { printf "**%s**\n", cap_type; is_first = 0; }
+                printf "- %s\n", clean_msg_line;
             }
         }
     }

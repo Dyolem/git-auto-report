@@ -42,7 +42,10 @@ alias git-report="~/Developer/Tools/git-auto-report/report.sh"
 
 ## 🛠️ 首次初始化与配置修改
 
-首次执行命令时，脚本会触发交互式向导，引导你设置**默认扫描的父目录**（例如 `~/Developer/Work`）。
+首次执行命令时，脚本会触发交互式向导，引导你设置默认偏好：
+1. 默认扫描的父目录（例如 **~/Developer/Work**）
+2. 默认报告分组方式（按日期 **date** 或按项目 **repo）**
+3. 简洁模式下的默认对齐方式（换行缩进 **inline** 或嵌套列表 **list）**
 
 如果你后续需要在不同电脑间同步，或者想要修改这些默认配置，可以通过以下两种方式：
 1. **重新运行向导**：执行 `git-report --init` (Windows 下为 `report --init`)
@@ -103,6 +106,7 @@ git-report month --team --save
 | `--branch` | 在每条记录后展示所属分支标签 |
 | `--asc` | 日志顺序由旧到新排布 (默认由新到旧) |
 | `--save` | 将终端输出结果保存为本地 Markdown 文件 |
+| `--align` | 设置简洁模式下的对齐方式：`inline` (换行缩进) 或 `list` (Markdown列表)|
 | `-o`, `--out <文件>` | 将结果保存为指定的本地文件 |
 | `--user <名字>` | 只提取特定作者的记录 |
 | `--email <邮箱>`| 只提取特定邮箱的记录 |
