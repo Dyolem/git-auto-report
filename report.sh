@@ -137,6 +137,7 @@ set_translations
 AFTER_DATE="midnight"
 BEFORE_DATE="now"
 SHOW_BRANCH=false
+SHOW_TIME=false    # 新增：是否显示时分秒参数
 SORT_ASC=false     
 CONCISE_MODE=false 
 INDENT_SPACES=4    
@@ -162,6 +163,7 @@ while [[ "$#" -gt 0 ]]; do
         --align) ALIGN_MODE="$2"; shift ;;
         --indent) INDENT_SPACES="$2"; shift ;;
         --team) TEAM_MODE=true ;;
+        --time) SHOW_TIME=true ;;  # 新增：接收 --time 参数
         --lang) 
             # 命令行强制覆盖语言
             if [ "$2" == "auto" ]; then EFFECTIVE_LANG="$DETECTED_LANG"; else EFFECTIVE_LANG="$2"; fi
@@ -184,7 +186,7 @@ if [[ "$WORK_DIR" == ~* ]]; then WORK_DIR="${WORK_DIR/#\~/$HOME}"; fi
 
 TEMP_LOG_FILE=$(mktemp)
 SORTED_FILE=$(mktemp)
-trap 'rm -f "$TEMP_LOG_FILE" "$SORTED_FILE"' EXIT INT TERM
+trap 'rm -f "$TEMP_LOG_FILE" "$SORTED_FILE" "$TEMP_LOG_FILE.dedup"' EXIT INT TERM
 
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
@@ -195,12 +197,13 @@ DELIM="###"
 echo "=========================================="
 echo -e "$TXT_GENERATING"
 echo -e "$TXT_WORKSPACE ${BLUE}$WORK_DIR${NC}"
-echo -e "$TXT_APPEARANCE $(if [ "$CONCISE_MODE" = true ]; then echo "${YELLOW}${TXT_CONCISE} (${ALIGN_MODE} ${TXT_ALIGN_LBL}, ${TXT_INDENT_LBL} ${INDENT_SPACES} ${TXT_CHARS_LBL})${NC}"; else echo "${GREEN}${TXT_STD}${NC}"; fi)"
+TIME_TIP=$(if [ "$SHOW_TIME" = true ]; then echo " (+Time)"; fi)
+echo -e "$TXT_APPEARANCE $(if [ "$CONCISE_MODE" = true ]; then echo "${YELLOW}${TXT_CONCISE} (${ALIGN_MODE} ${TXT_ALIGN_LBL}, ${TXT_INDENT_LBL} ${INDENT_SPACES} ${TXT_CHARS_LBL})${TIME_TIP}${NC}"; else echo "${GREEN}${TXT_STD}${TIME_TIP}${NC}"; fi)"
 echo "=========================================="
 echo ""
 
-# === 核心日志收集与排版逻辑 ===
-find "$WORK_DIR" -type d \( -path "*/node_modules" -o -path "*/.next" -o -path "*/dist" \) -prune -o -name ".git" -type d -print 2>/dev/null | while IFS= read -r gitdir; do
+# === 核心日志收集 ===
+find "$WORK_DIR" -type d \( -path "*/node_modules" -o -path "*/.next" -o -path "*/dist" \) -prune -o -name ".git" -print 2>/dev/null | while IFS= read -r gitdir; do
     repo_root=$(dirname "$gitdir")
     cd "$repo_root" || continue
     repo_name=$(basename "$repo_root")
@@ -210,35 +213,52 @@ find "$WORK_DIR" -type d \( -path "*/node_modules" -o -path "*/.next" -o -path "
     if [ -n "$CUSTOM_EMAIL" ]; then CMD+=(--author="$CUSTOM_EMAIL"); fi
     CMD+=(--after="$AFTER_DATE" --before="$BEFORE_DATE" --no-merges)
 
-    logs=$( "${CMD[@]}" --date=format:'%Y-%m-%d' --pretty=format:"%ai${DELIM}%ad${DELIM}%s${DELIM}%d" 2>/dev/null )
+    if [ -d "$gitdir" ]; then
+        repo_weight="0"
+    else
+        repo_weight="1"
+    fi
+
+    logs=$( "${CMD[@]}" --date=format:'%Y-%m-%d' --pretty=format:"%H${DELIM}%ai${DELIM}%ad${DELIM}%s${DELIM}%d" 2>/dev/null )
     if [ -n "$logs" ]; then
-        echo "$logs" | sed "s/$/${DELIM}$repo_name/" >> "$TEMP_LOG_FILE"
+        echo "$logs" | sed "s/$/${DELIM}${repo_weight}${DELIM}$repo_name/" >> "$TEMP_LOG_FILE"
     fi
     cd - > /dev/null
 done
 
 if [ ! -s "$TEMP_LOG_FILE" ]; then
     echo "$TXT_NO_COMMITS"
-    rm "$TEMP_LOG_FILE" "$SORTED_FILE"
+    rm -f "$TEMP_LOG_FILE" "$SORTED_FILE" "$TEMP_LOG_FILE.dedup"
     exit 0
 fi
 
+# 🚀 macOS 兼容的全局去重逻辑（已替换易错的 sort，改为全权由 AWK 处理）
+awk -F'###' '{
+    if (!($1 in min_weight) || $6 < min_weight[$1]) {
+        min_weight[$1] = $6
+        lines[$1] = $0
+    }
+} END {
+    for (hash in lines) print lines[hash]
+}' "$TEMP_LOG_FILE" > "$TEMP_LOG_FILE.dedup"
+
 if [ "$GROUP_BY" = "date" ]; then
     if [ "$SORT_ASC" = true ]; then
-        awk -F'###' '{print $2 "|" $5 "|" $1 "|" $0}' "$TEMP_LOG_FILE" | sort -t'|' -k1,1 -k2,2 -k3,3 | cut -d'|' -f4- > "$SORTED_FILE"
+        awk -F'###' '{print $3 "|" $7 "|" $2 "|" $0}' "$TEMP_LOG_FILE.dedup" | sort -t'|' -k1,1 -k2,2 -k3,3 | cut -d'|' -f4- > "$SORTED_FILE"
     else
-        awk -F'###' '{print $2 "|" $5 "|" $1 "|" $0}' "$TEMP_LOG_FILE" | sort -t'|' -k1,1r -k2,2 -k3,3r | cut -d'|' -f4- > "$SORTED_FILE"
+        awk -F'###' '{print $3 "|" $7 "|" $2 "|" $0}' "$TEMP_LOG_FILE.dedup" | sort -t'|' -k1,1r -k2,2 -k3,3r | cut -d'|' -f4- > "$SORTED_FILE"
     fi
 else
     if [ "$SORT_ASC" = true ]; then
-        awk -F'###' '{print $5 "|" $2 "|" $1 "|" $0}' "$TEMP_LOG_FILE" | sort -t'|' -k1,1 -k2,2 -k3,3 | cut -d'|' -f4- > "$SORTED_FILE"
+        awk -F'###' '{print $7 "|" $3 "|" $2 "|" $0}' "$TEMP_LOG_FILE.dedup" | sort -t'|' -k1,1 -k2,2 -k3,3 | cut -d'|' -f4- > "$SORTED_FILE"
     else
-        awk -F'###' '{print $5 "|" $2 "|" $1 "|" $0}' "$TEMP_LOG_FILE" | sort -t'|' -k1,1 -k2,2r -k3,3r | cut -d'|' -f4- > "$SORTED_FILE"
+        awk -F'###' '{print $7 "|" $3 "|" $2 "|" $0}' "$TEMP_LOG_FILE.dedup" | sort -t'|' -k1,1 -k2,2r -k3,3r | cut -d'|' -f4- > "$SORTED_FILE"
     fi
 fi
 
 # === 使用 AWK 进行规范化分组、提取和排版 ===
-FORMATTED_LOGS=$(awk -F'###' -v group_by="$GROUP_BY" -v show_branch="$SHOW_BRANCH" -v concise_mode="$CONCISE_MODE" -v align_mode="$ALIGN_MODE" -v indent_spaces="$INDENT_SPACES" -v lang_pref="$EFFECTIVE_LANG" '
+# 🚀 新增传入 show_time 变量
+FORMATTED_LOGS=$(awk -F'###' -v group_by="$GROUP_BY" -v show_branch="$SHOW_BRANCH" -v show_time="$SHOW_TIME" -v concise_mode="$CONCISE_MODE" -v align_mode="$ALIGN_MODE" -v indent_spaces="$INDENT_SPACES" -v lang_pref="$EFFECTIVE_LANG" '
 function trim(s) {
     sub(/^[ \t\r\n\v\f]+/, "", s);
     sub(/[ \t\r\n\v\f]+$/, "", s);
@@ -261,7 +281,11 @@ BEGIN {
 }
 
 {
-    iso_time = $1; date_str = $2; msg = $3; branch = $4; repo = $5;
+    hash = $1; iso_time = $2; date_str = $3; msg = $4; branch = $5; weight = $6; repo = $7;
+
+    # 🚀 提取时分秒（从 2023-10-25 14:30:00 +0800 中取第二部分）
+    split(iso_time, t_parts, " ");
+    time_str = t_parts[2];
 
     type = "other";
     clean_msg = msg;
@@ -276,8 +300,12 @@ BEGIN {
         type = tolower(type_part);
     }
 
+    # 🚀 组装时分秒前缀，若传入 --time 则显示
+    time_prefix = (show_time == "true") ? "`[" time_str "]` " : "";
     branch_str = (show_branch == "true" && length(branch) > 2) ? " `" branch "`" : "";
-    line = clean_msg branch_str;
+    
+    # 拼接最终文本行
+    line = time_prefix clean_msg branch_str;
 
     if (group_by == "date") {
         if (date_str != last_date) {
