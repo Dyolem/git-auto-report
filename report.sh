@@ -4,14 +4,11 @@
 detect_os_lang() {
     local detected="en"
     if [[ "$OSTYPE" == "darwin"* ]]; then
-        # 1. macOS: 读取系统 GUI 偏好设置
         if defaults read -g AppleLanguages 2>/dev/null | head -n 5 | grep -qi "zh"; then detected="zh"; fi
     elif [[ "$OSTYPE" == "msys"* || "$OSTYPE" == "cygwin"* || "$OSTYPE" == "win32" ]]; then
-        # 2. Windows (Git Bash / MSYS2): 读取注册表
         if reg query "HKCU\Control Panel\International" /v LocaleName 2>/dev/null | grep -qi "zh"; then detected="zh"
         elif [[ "${LANG:-}" == *"zh"* ]]; then detected="zh"; fi
     else
-        # 3. Linux / WSL 及其他标准环境
         if [[ "${LANG:-}" == *"zh"* ]]; then detected="zh"; fi
     fi
     echo "$detected"
@@ -45,6 +42,8 @@ set_translations() {
         TXT_DONE="✅ Done!"
         TXT_EXPORT_TIP="(💡 Append --save to export to a file)"
         TXT_EXPORT_SAVED="✅ Done! Result saved to"
+        TXT_BOUNDS_LBL="Work Hours"
+        TXT_NEXT_DAY="(Next Day) "
     else
         TXT_WELCOME="👋 欢迎使用 Git Auto Report"
         TXT_INIT_PROMPT="首次运行或重新配置，请设置您的偏好参数："
@@ -69,6 +68,8 @@ set_translations() {
         TXT_DONE="✅ 完成！"
         TXT_EXPORT_TIP="(💡 若需导出文件，可追加 --save)"
         TXT_EXPORT_SAVED="✅ 完成！结果已保存至"
+        TXT_BOUNDS_LBL="打卡区间"
+        TXT_NEXT_DAY="(次日) "
     fi
 }
 
@@ -80,9 +81,7 @@ DEFAULT_GROUP_BY="date"
 DEFAULT_ALIGN_MODE="inline" 
 DEFAULT_LANG_PREF="auto"
 
-# 首次运行或 --init
 if [ ! -f "$CONFIG_FILE" ] || [ "$1" == "--init" ]; then
-    # 临时生效以便显示引导语言（检测如果是中文则用中文引导，否则英文）
     EFFECTIVE_LANG="$DETECTED_LANG"
     set_translations
 
@@ -101,14 +100,12 @@ if [ ! -f "$CONFIG_FILE" ] || [ "$1" == "--init" ]; then
     input_group="${input_group:-$DEFAULT_GROUP_BY}"
     input_align="${input_align:-$DEFAULT_ALIGN_MODE}"
     
-    # 写入配置文件
     echo "# Git Auto Report 配置文件" > "$CONFIG_FILE"
     echo "LANG_PREF=\"$input_lang\"" >> "$CONFIG_FILE"
     echo "WORK_DIR=\"$input_dir\"" >> "$CONFIG_FILE"
     echo "GROUP_BY=\"$input_group\"" >> "$CONFIG_FILE"
     echo "ALIGN_MODE=\"$input_align\"" >> "$CONFIG_FILE"
     
-    # 刷新并提示保存成功
     if [ "$input_lang" == "auto" ]; then EFFECTIVE_LANG="$DETECTED_LANG"; else EFFECTIVE_LANG="$input_lang"; fi
     set_translations
     
@@ -124,7 +121,6 @@ source "$CONFIG_FILE"
 LANG_PREF="${LANG_PREF:-$DEFAULT_LANG_PREF}"
 ALIGN_MODE="${ALIGN_MODE:-$DEFAULT_ALIGN_MODE}"
 
-# 解析 auto 模式或固定语言
 if [ "$LANG_PREF" == "auto" ]; then
     EFFECTIVE_LANG="$DETECTED_LANG"
 else
@@ -137,7 +133,8 @@ set_translations
 AFTER_DATE="midnight"
 BEFORE_DATE="now"
 SHOW_BRANCH=false
-SHOW_TIME=false    # 新增：是否显示时分秒参数
+SHOW_TIME=false    
+SHOW_BOUNDS=false  
 SORT_ASC=false     
 CONCISE_MODE=false 
 INDENT_SPACES=4    
@@ -149,7 +146,6 @@ CUSTOM_EMAIL=$(git config --global user.email 2>/dev/null)
 TODAY=$(date +%Y-%m-%d)
 OUTPUT_FILE=""
 
-# --- 参数解析 ---
 while [[ "$#" -gt 0 ]]; do
     case $1 in
         --user) CUSTOM_USER="$2"; shift ;;
@@ -163,9 +159,9 @@ while [[ "$#" -gt 0 ]]; do
         --align) ALIGN_MODE="$2"; shift ;;
         --indent) INDENT_SPACES="$2"; shift ;;
         --team) TEAM_MODE=true ;;
-        --time) SHOW_TIME=true ;;  # 新增：接收 --time 参数
+        --time) SHOW_TIME=true ;;
+        --bounds) SHOW_BOUNDS=true ;;
         --lang) 
-            # 命令行强制覆盖语言
             if [ "$2" == "auto" ]; then EFFECTIVE_LANG="$DETECTED_LANG"; else EFFECTIVE_LANG="$2"; fi
             shift ;;
         --save) SAVE_TO_FILE=true; OUTPUT_FILE="WorkReport_${TODAY}.md" ;;
@@ -179,7 +175,6 @@ while [[ "$#" -gt 0 ]]; do
     shift
 done
 
-# 参数解析完后，重新应用语言（防用户传了 --lang）
 set_translations
 
 if [[ "$WORK_DIR" == ~* ]]; then WORK_DIR="${WORK_DIR/#\~/$HOME}"; fi
@@ -191,6 +186,7 @@ trap 'rm -f "$TEMP_LOG_FILE" "$SORTED_FILE" "$TEMP_LOG_FILE.dedup"' EXIT INT TER
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 YELLOW='\033[0;33m'
+CYAN='\033[0;36m'
 NC='\033[0m'
 DELIM="###"
 
@@ -198,7 +194,8 @@ echo "=========================================="
 echo -e "$TXT_GENERATING"
 echo -e "$TXT_WORKSPACE ${BLUE}$WORK_DIR${NC}"
 TIME_TIP=$(if [ "$SHOW_TIME" = true ]; then echo " (+Time)"; fi)
-echo -e "$TXT_APPEARANCE $(if [ "$CONCISE_MODE" = true ]; then echo "${YELLOW}${TXT_CONCISE} (${ALIGN_MODE} ${TXT_ALIGN_LBL}, ${TXT_INDENT_LBL} ${INDENT_SPACES} ${TXT_CHARS_LBL})${TIME_TIP}${NC}"; else echo "${GREEN}${TXT_STD}${TIME_TIP}${NC}"; fi)"
+BOUNDS_TIP=$(if [ "$SHOW_BOUNDS" = true ]; then echo -e " ${CYAN}(+Bounds Summary)${NC}"; fi)
+echo -e "$TXT_APPEARANCE $(if [ "$CONCISE_MODE" = true ]; then echo -n "${YELLOW}${TXT_CONCISE} (${ALIGN_MODE} ${TXT_ALIGN_LBL}, ${TXT_INDENT_LBL} ${INDENT_SPACES} ${TXT_CHARS_LBL})${NC}"; else echo -n "${GREEN}${TXT_STD}${NC}"; fi)${TIME_TIP}${BOUNDS_TIP}"
 echo "=========================================="
 echo ""
 
@@ -232,16 +229,48 @@ if [ ! -s "$TEMP_LOG_FILE" ]; then
     exit 0
 fi
 
-# 🚀 macOS 兼容的全局去重逻辑（已替换易错的 sort，改为全权由 AWK 处理）
-awk -F'###' '{
+# 🚀 全局去重 + 逻辑日期修正（将凌晨 00:00~04:59 划为前一天）
+awk -F'###' -v delim="###" '
+function get_logical_date(cal_date, t_str) {
+    # 如果时间大于等于 05:00:00，属于当天，不作修改
+    if (t_str >= "05:00:00") return cal_date;
+    
+    # 手动处理日历减去 1 天（兼容 macOS/Linux 的无依赖实现）
+    split(cal_date, parts, "-");
+    y = parts[1] + 0; m = parts[2] + 0; d = parts[3] + 0;
+    d--;
+    if (d == 0) {
+        m--;
+        if (m == 0) { y--; m = 12; d = 31; }
+        else if (m == 4 || m == 6 || m == 9 || m == 11) { d = 30; }
+        else if (m == 2) { d = ((y % 4 == 0 && y % 100 != 0) || y % 400 == 0) ? 29 : 28; }
+        else { d = 31; }
+    }
+    return sprintf("%04d-%02d-%02d", y, m, d);
+}
+{
+    split($2, t_parts, " ");
+    cal_date = t_parts[1];
+    time_str = t_parts[2];
+    
+    # 重新计算日期，并覆盖当前行的第3列
+    logical_date = get_logical_date(cal_date, time_str);
+    $3 = logical_date;
+    
+    # 重新组装整行
+    line = $1;
+    for (i = 2; i <= NF; i++) line = line delim $i;
+
+    # 权重去重逻辑
     if (!($1 in min_weight) || $6 < min_weight[$1]) {
         min_weight[$1] = $6
-        lines[$1] = $0
+        lines[$1] = line
     }
 } END {
     for (hash in lines) print lines[hash]
 }' "$TEMP_LOG_FILE" > "$TEMP_LOG_FILE.dedup"
 
+# 排序
 if [ "$GROUP_BY" = "date" ]; then
     if [ "$SORT_ASC" = true ]; then
         awk -F'###' '{print $3 "|" $7 "|" $2 "|" $0}' "$TEMP_LOG_FILE.dedup" | sort -t'|' -k1,1 -k2,2 -k3,3 | cut -d'|' -f4- > "$SORTED_FILE"
@@ -257,8 +286,7 @@ else
 fi
 
 # === 使用 AWK 进行规范化分组、提取和排版 ===
-# 🚀 新增传入 show_time 变量
-FORMATTED_LOGS=$(awk -F'###' -v group_by="$GROUP_BY" -v show_branch="$SHOW_BRANCH" -v show_time="$SHOW_TIME" -v concise_mode="$CONCISE_MODE" -v align_mode="$ALIGN_MODE" -v indent_spaces="$INDENT_SPACES" -v lang_pref="$EFFECTIVE_LANG" '
+FORMATTED_LOGS=$(awk -F'###' -v group_by="$GROUP_BY" -v show_branch="$SHOW_BRANCH" -v show_time="$SHOW_TIME" -v show_bounds="$SHOW_BOUNDS" -v concise_mode="$CONCISE_MODE" -v align_mode="$ALIGN_MODE" -v indent_spaces="$INDENT_SPACES" -v lang_pref="$EFFECTIVE_LANG" -v lbl_bounds="$TXT_BOUNDS_LBL" -v lbl_next_day="$TXT_NEXT_DAY" '
 function trim(s) {
     sub(/^[ \t\r\n\v\f]+/, "", s);
     sub(/[ \t\r\n\v\f]+$/, "", s);
@@ -280,10 +308,29 @@ BEGIN {
     }
 }
 
+# 🚀 扫描第一遍：根据完整的 ISO 时间寻找区间，解决凌晨打卡的时间乱序问题
+FNR == NR {
+    date_str = $3;
+    iso_time = $2;
+    split(iso_time, t_parts, " ");
+    time_str = t_parts[2];
+    
+    if (!(date_str in min_iso) || iso_time < min_iso[date_str]) {
+        min_iso[date_str] = iso_time;
+        min_t[date_str] = time_str;
+    }
+    if (!(date_str in max_iso) || iso_time > max_iso[date_str]) {
+        max_iso[date_str] = iso_time;
+        max_t[date_str] = time_str;
+        max_cal[date_str] = t_parts[1]; # 记录最晚时间的物理日历日期，用来判断是否跨天
+    }
+    next;
+}
+
+# 扫描第二遍：正常的排版渲染逻辑
 {
     hash = $1; iso_time = $2; date_str = $3; msg = $4; branch = $5; weight = $6; repo = $7;
 
-    # 🚀 提取时分秒（从 2023-10-25 14:30:00 +0800 中取第二部分）
     split(iso_time, t_parts, " ");
     time_str = t_parts[2];
 
@@ -300,18 +347,22 @@ BEGIN {
         type = tolower(type_part);
     }
 
-    # 🚀 组装时分秒前缀，若传入 --time 则显示
     time_prefix = (show_time == "true") ? "`[" time_str "]` " : "";
     branch_str = (show_branch == "true" && length(branch) > 2) ? " `" branch "`" : "";
     
-    # 拼接最终文本行
     line = time_prefix clean_msg branch_str;
 
     if (group_by == "date") {
         if (date_str != last_date) {
             if (last_date != "") print_types();
-            printf "### 📅 %s\n\n", date_str;
-            printf "【📦 %s】\n", repo;
+            printf "### 📅 %s\n", date_str;
+            if (show_bounds == "true") {
+                # 🚀 跨天智能标识：如果最晚的物理日期不等于逻辑日期，说明跨午夜了
+                max_str = max_t[date_str];
+                if (max_cal[date_str] != date_str) max_str = lbl_next_day max_str;
+                printf "⏱️ %s: %s ~ %s\n", lbl_bounds, min_t[date_str], max_str;
+            }
+            printf "\n【📦 %s】\n", repo;
             last_date = date_str; last_repo = repo;
             reset_types();
         } else if (repo != last_repo) {
@@ -324,12 +375,24 @@ BEGIN {
         if (repo != last_repo) {
             if (last_repo != "") print_types();
             printf "## 📦 %s: %s\n\n", L_PROJ, repo;
-            printf "### 📅 %s\n\n", date_str;
+            printf "### 📅 %s\n", date_str;
+            if (show_bounds == "true") {
+                max_str = max_t[date_str];
+                if (max_cal[date_str] != date_str) max_str = lbl_next_day max_str;
+                printf "⏱️ %s: %s ~ %s\n", lbl_bounds, min_t[date_str], max_str;
+            }
+            printf "\n";
             last_repo = repo; last_date = date_str;
             reset_types();
         } else if (date_str != last_date) {
             print_types();
-            printf "### 📅 %s\n\n", date_str;
+            printf "### 📅 %s\n", date_str;
+            if (show_bounds == "true") {
+                max_str = max_t[date_str];
+                if (max_cal[date_str] != date_str) max_str = lbl_next_day max_str;
+                printf "⏱️ %s: %s ~ %s\n", lbl_bounds, min_t[date_str], max_str;
+            }
+            printf "\n";
             last_date = date_str;
             reset_types();
         }
@@ -404,7 +467,7 @@ function print_types() {
     }
     printf "\n";
 }
-' "$SORTED_FILE")
+' "$SORTED_FILE" "$SORTED_FILE")
 
 # === 组装完整文本 ===
 FULL_REPORT="# $TXT_REPORT_TITLE ($AFTER_DATE -> $BEFORE_DATE)
