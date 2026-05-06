@@ -35,6 +35,10 @@ chmod +x ~/Developer/Tools/git-auto-report/report.sh
 alias git-report="~/Developer/Tools/git-auto-report/report.sh"
 ```
 保存后，执行 `source ~/.zshrc` 使配置立即生效。
+注意: 该别名只在当前终端会话生效,若需持久化,执行以下命令:
+```bash
+echo 'alias git-report="~/Developer/Tools/git-auto-report/report.sh"' >> ~/.zshrc
+```
 
 #### 🪟 Windows
 1. 确保你的电脑上已经安装了 **Git for Windows**，并且 `bash.exe` 可以正常调用。
